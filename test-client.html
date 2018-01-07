@@ -1,0 +1,274 @@
+<html>
+  <body style="background-color: #aaa">
+    <h1> Poker </h1>
+
+    <h2> Tables list </h2>
+    <ul id='tables-list'>
+    </ul>
+
+
+    <form id='open-table'>
+      <input id='open-table-id'/>
+      <button> Open table </button>
+    </form>
+
+    <form id='create-table'>
+      <lable for='table-name'> Name </lable>
+      <input id='table-name'/>
+      <lable for='table-sb'> Small blind </lable>
+      <input id='table-sb' type='number' value='20'/>
+      <lable for='table-bb'> Big blind </lable>
+      <input id='table-bb' type='number' value='50'/>
+      <button> Create </button>
+    </form>
+
+    <section id='table-section'>
+      <div id='table-header'>
+      </div>
+      <ul id="events-list">
+      </ul>
+      <form id='make-move'>
+        <select id='move-action'>
+          <option value="check">Check</option>
+          <option value="raise">Raise</option>
+          <option value="call">Call</option>
+          <option value="fold">fold</option>
+        </select>
+        <lable for='move-bet'> Bet </lable>
+        <input id='move-bet' type='number'/>
+        <button> Make move </button>
+      </form>
+    </section>
+  <body>
+  <script
+    src="https://code.jquery.com/jquery-3.2.1.min.js"
+    integrity="sha256-hwg4gsxgFZhOsEEamdOYGBf13FyQuiTwlAQgxVSNgt4="
+    crossorigin="anonymous">
+  </script>
+  <style>
+    #table-section {
+      width: 900px;
+      height: 500px;
+      background-color: white;
+      position: relative;
+      display: none;
+    }
+    #make-move {
+      max-height: 50px;
+      position: absolute;
+      bottom: 0;
+      display: none;
+    }
+
+    #events-list {
+      overflow: scroll;
+      height: 400px;
+    }
+
+    #table-header {
+      height: 25px;
+      background-color: pink;
+      border: 2px;
+    }
+  </style>
+  <script>
+    window.onload = function(){
+      $(() => {
+        const request = new Request();
+        const ui = new UI();
+
+        request.logInClient(({client_id}) => {
+          const ws = request.registerToSocket(client_id, (msg) => {
+            switch (msg.type) {
+              case 'table_created':
+                ui.render(ui.createTable(msg.data), {method: 'append', selector: '#tables-list'});
+
+              case 'game_event':
+                console.log('game_event', msg);
+                ui.render(ui.createEvent(msg.data), {method: 'prepend', selector: '#events-list'});
+
+                if (msg.data.type === 'move_request' && msg.data.player_id === client_id) {
+                  $('#make-move').show();
+                }
+              default:
+                console.log('default', msg);
+            }
+          });
+
+          $('#create-table').submit((e) => {
+            const name = $('#table-name').val();
+            const sb = $('#table-sb').val();
+            const bb = $('#table-bb').val();
+
+            request.createTable({name, sb, bb, client_id});
+            e.preventDefault();
+          });
+
+          $('#open-table').submit((e) => {
+            const tableId = $('#open-table-id').val();
+            request.registerToTable({client_id, table_id: tableId}, ({table}) => {
+              $('#table-section').show();
+              ui.render(ui.createTable(table), {method: 'html', selector: '#table-header'});
+            });
+            e.preventDefault();
+          });
+
+          $('#make-move').submit((e) => {
+            const action = $('#move-action').val();
+            const bet = $('#move-bet').val();
+            const tableId = $('#table-header .table').data('id');
+            debugger
+
+            request.makeMove({client_id, table_id: tableId, move: {action_type: action, bet}}, ({table}) => {
+              $('#make-move').hide();
+            });
+
+            e.preventDefault();
+          })
+
+          request.fetchTables({}, ({tables}) => ui.render(ui.createTables(tables), {method: 'append', selector: '#tables-list'}));
+        });
+      });
+    }
+
+    class UI {
+      createTable(table) {
+        return [$(`
+          <div class="table" data-id="${table.id}">
+            Table[${table.id}]
+            <span>Name: ${table.name}</span>
+            <span class="table-info"> SB: ${table.small_blind} BB: ${table.big_blind} </span>
+          </div>
+        `)]
+      }
+
+      createTables(tables) {
+        return tables.map(this.createTable.bind(this));
+      }
+
+      createEvent(event) {
+        const date  = new Date();
+        return [$(`
+          <li>
+            <span> ${date.getMinutes()}:${date.getSeconds()}|</span>
+            <span> ${JSON.stringify(event)} </span>
+          </li>
+        `)];
+      }
+
+      render(elements, {method, selector}) {
+        elements.forEach((element) => {
+          $(selector)[method](element)
+        });
+      }
+    }
+
+    class Request {
+      constructor() {
+        this.base_url = 'http://localhost:3000';
+        this.pusher_uri = `ws://localhost:4567/clients`;
+      }
+
+      logInClient(onSuccess) {
+        $.ajax({
+          type: 'POST',
+          url: `${this.base_url}/clients`,
+          data: {},
+          dataType: 'json',
+          success: (data) => {
+            if (data.status === 'success') {
+              onSuccess(data);
+            } else {
+              console.log('error', 'registerClient', data);
+            }
+          },
+          error: console.log.bind(console),
+        });
+      }
+
+      registerToSocket(clientId, onMessage) {
+        const ws = new WebSocket(`${this.pusher_uri}/${clientId}`);
+
+        ws.onopen = () => { onMessage('---Connection opened---'); };
+        ws.onclose = () => { onMessage('---Connection closed---'); }
+        ws.onmessage = (raw) => {
+          onMessage(JSON.parse(raw.data));
+        }
+
+        return ws;
+      }
+
+      createTable(params, onSuccess) {
+        $.ajax({
+          type: 'POST',
+          url: `${this.base_url}/tables`,
+          data: params,
+          dataType: 'json',
+          success: (data) => {
+            if (data.status === 'success') {
+              onSuccess && onSuccess(data);
+              console.log('Successfully created new table');
+            } else {
+              console.log('error', data);
+            }
+          },
+          error: console.log.bind(console),
+        });
+      }
+
+      fetchTables(_params, onSuccess) {
+        $.ajax({
+          type: 'GET',
+          url: `${this.base_url}/tables`,
+          dataType: 'json',
+          success: (data) => {
+            if (data.status === 'success') {
+              onSuccess && onSuccess(data);
+              console.log('Successfully fetch all tables');
+            } else {
+              console.log('error', data);
+            }
+          },
+          error: console.log.bind(console),
+        });
+      }
+
+      registerToTable({table_id, client_id}, onSuccess) {
+        $.ajax({
+          type: 'POST',
+          url: `${this.base_url}/tables/${table_id}/players`,
+          data: {client_id: client_id, balance: 1000},
+          dataType: 'json',
+          success: (data) => {
+            if (data.status === 'success') {
+              onSuccess && onSuccess(data);
+              console.log('success', 'registerToTable', data);
+            } else {
+              console.log('error', data);
+            }
+          },
+          error: console.log.bind(console),
+        });
+      }
+
+      makeMove({table_id, client_id, move}, onSuccess) {
+        $.ajax({
+          type: 'POST',
+          url: `${this.base_url}/tables/${table_id}/players/${client_id}/move`,
+          data: move,
+          dataType: 'json',
+          success: (data) => {
+            if (data.status === 'success') {
+              onSuccess && onSuccess(data);
+              console.log('success', 'registerToTable', data);
+            } else {
+              console.log('error', data);
+            }
+          },
+          error: console.log.bind(console),
+        });
+      }
+    }
+
+  </script>
+<html>
